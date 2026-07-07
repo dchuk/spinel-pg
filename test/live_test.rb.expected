@@ -1,0 +1,14 @@
+connected    true
+select_basic true
+fields       one,greet
+create_tag   CREATE TABLE
+insert_tag   INSERT 0 2
+rows         2
+row0         1:alice:first
+null_note    true
+update_tag   UPDATE 1
+utf8         true
+count_null   0
+err_raises   true
+err_recovers true
+done
