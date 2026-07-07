@@ -67,6 +67,7 @@ spinel-redis does with redis-rb) lights up once the gem is installed:
 - matz/spinel#1778 — `String#include?` truncates at NUL bytes; tests
   use a byte-exact scan for wire assertions.
 - matz/spinel#1779 — sp_crypto explicit-length variants (found here).
-- The workaround idioms from spinel-redis carry over: assign-then-return
-  in rescue (#1775), sequential statements over side-effect `&&` chains
-  (#1773), `.to_s` at wire boundaries.
+- The workaround idioms from spinel-redis carry over (`.to_s` at wire
+  boundaries; assign-then-return; sequential statements). #1773/#1775
+  themselves were fixed upstream same-day (spinel a7e42e90) — the
+  shapes are kept for compatibility with pre-fix builds.
