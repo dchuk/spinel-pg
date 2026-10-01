@@ -226,6 +226,7 @@ module PgBase64
         if nbits >= 8
           nbits = nbits - 8
           bytes.push((acc >> nbits) & 0xff)
+          acc = acc & ((1 << nbits) - 1)
         end
       end
       i = i + 1
