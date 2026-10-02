@@ -3,12 +3,21 @@
 # protocol logic tests dual-runtime against a scripted transport, the
 # real sp_net transport stays in the compiled-only lanes.
 #
-# Simple-query protocol only (text results): that's the whole surface
-# the streaming server's auth queries need, and the honest v0.1 of the
-# eventual ActiveRecord seam. Extended protocol / COPY / notifications
+# Simple query, plus the extended protocol for parameters and named
+# prepared statements; text results either way. COPY / notifications
 # are ledgered in the README.
 require "pg/wire"
 require "pg/scram"
+
+# transaction_status values, as the pg gem names them (ACTIVE never
+# shows: a call returns only once ReadyForQuery has arrived).
+module PG
+  PQTRANS_IDLE = 0
+  PQTRANS_ACTIVE = 1
+  PQTRANS_INTRANS = 2
+  PQTRANS_INERROR = 3
+  PQTRANS_UNKNOWN = 4
+end
 
 # One query's result. Storage is flat and monomorphic — values in one
 # StrArray with a parallel null-flag IntArray — and nil appears only at
@@ -61,15 +70,25 @@ class PgClientCore
     @nonce = scram_nonce
     @parser = PgWireParser.new
     @ready = false
+    @status = PG::PQTRANS_UNKNOWN
   end
 
   def ready?
     @ready
   end
 
+  # From the latest ReadyForQuery: PG::PQTRANS_IDLE, _INTRANS, or
+  # _INERROR (a failed transaction block; ROLLBACK, or ROLLBACK TO a
+  # savepoint, gets out of it). _UNKNOWN before startup and once the
+  # connection is closed or lost.
+  def transaction_status
+    @status
+  end
+
   def close
     @t.write(PgWire.terminate)
     @t.close
+    @status = PG::PQTRANS_UNKNOWN
   end
 
   # -- plumbing ----------------------------------------------------------
@@ -81,6 +100,7 @@ class PgClientCore
       end
       chunk = @t.read_some(65536)
       if chunk.bytesize == 0
+        @status = PG::PQTRANS_UNKNOWN
         raise "pg: connection lost"
       end
       @parser.feed(chunk)
@@ -91,6 +111,29 @@ class PgClientCore
     sev = PgDecode.error_field(body, "S")
     msg = PgDecode.error_field(body, "M")
     raise "pg: " + sev + ": " + msg
+  end
+
+  # FATAL and PANIC end the session: the server closes the connection
+  # without a ReadyForQuery. "V" is the untranslated severity.
+  def session_ending?(body)
+    sev = PgDecode.error_field(body, "V")
+    if sev == ""
+      sev = PgDecode.error_field(body, "S")
+    end
+    sev == "FATAL" || sev == "PANIC"
+  end
+
+  def track_status(body)
+    s = PgDecode.ready_status(body)
+    if s == "I"
+      @status = PG::PQTRANS_IDLE
+    elsif s == "T"
+      @status = PG::PQTRANS_INTRANS
+    elsif s == "E"
+      @status = PG::PQTRANS_INERROR
+    else
+      @status = PG::PQTRANS_UNKNOWN
+    end
   end
 
   # -- startup / auth ------------------------------------------------------
@@ -133,6 +176,7 @@ class PgClientCore
       elsif m.kind == "E"
         raise_error(m.body)
       elsif m.kind == "Z"
+        track_status(m.body)
         @ready = true
         return 0
       end
@@ -146,6 +190,54 @@ class PgClientCore
   # result wins — enough for v0.1; ledgered).
   def exec(sql)
     @t.write(PgWire.query(sql))
+    r = read_result
+    r
+  end
+
+  # Extended query through the unnamed statement: the parameters travel
+  # apart from the SQL ($1, $2, ...), so nothing is quoted or
+  # interpolated. nil is SQL NULL; other values go as their to_s.
+  def exec_params(sql, params)
+    @t.write(PgWire.parse("", sql.to_s) + portal_messages("", params))
+    r = read_result
+    r
+  end
+
+  # Named prepared statement: parsed once, then run any number of times
+  # with exec_prepared (no Parse). The result has no rows.
+  def prepare(name, sql)
+    @t.write(PgWire.parse(name.to_s, sql.to_s) + PgWire.sync)
+    r = read_result
+    r
+  end
+
+  def exec_prepared(name, params)
+    @t.write(portal_messages(name.to_s, params))
+    r = read_result
+    r
+  end
+
+  # Frees a prepared statement on the server (the protocol's Close; same
+  # effect as DEALLOCATE).
+  def close_prepared(name)
+    @t.write(PgWire.close("S", name.to_s) + PgWire.sync)
+    r = read_result
+    r
+  end
+
+  # Bind `statement` to the unnamed portal, describe it (for the field
+  # names), run it to completion, Sync: the caller sends it all in one
+  # write. On an error the server skips to the Sync and answers
+  # ReadyForQuery, so read_result's drain-then-raise leaves the
+  # connection ready for the next call.
+  def portal_messages(statement, params)
+    PgWire.bind("", statement, params) + PgWire.describe("P", "") + PgWire.execute("", 0) + PgWire.sync
+  end
+
+  # One result, read through ReadyForQuery. An ErrorResponse raises only
+  # once ReadyForQuery is in, so the next call starts on a message
+  # boundary; one that ends the session raises at once.
+  def read_result
     fields = [""]
     fields.delete_at(0)
     values = [""]
@@ -177,13 +269,20 @@ class PgClientCore
       elsif m.kind == "E"
         err_body = m.body
         failed = true
+        if session_ending?(m.body)
+          @status = PG::PQTRANS_UNKNOWN
+          raise_error(m.body)
+        end
       elsif m.kind == "Z"
+        track_status(m.body)
         if failed
           raise_error(err_body)
         end
         return PgResult.new(fields, values, nulls, tag)
       end
-      # "N" notices / "S" parameter changes: ignored
+      # "N" notices / "S" parameter changes: ignored. So are the replies
+      # with no result data: "1" ParseComplete, "2" BindComplete, "3"
+      # CloseComplete, "n" NoData, "I" EmptyQueryResponse.
     end
   end
 end
