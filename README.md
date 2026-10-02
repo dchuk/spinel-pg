@@ -61,6 +61,10 @@ spinel-redis does with redis-rb) lights up once the gem is installed:
 - Multi-statement `exec` strings: last result wins.
 - `PG.connect` is positional; the gem's kwargs/URL forms come with the
   seam work.
+- **Encodings other than UTF-8**: startup sets `client_encoding` to
+  UTF8, SQL goes out as its bytes, and text comes back tagged UTF-8.
+  `SET client_encoding` to anything else isn't supported, and an early
+  startup error may hold non-UTF-8 bytes, still tagged UTF-8.
 
 ## Spinel notes
 

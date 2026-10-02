@@ -6,6 +6,12 @@
 # sites to poly).
 #
 # Dependency-free: parity tests run this under CRuby.
+#
+# Text is UTF-8 both ways. Startup sets client_encoding UTF8; text joins
+# a message as bytes (.b: CRuby won't concatenate a length prefix
+# holding a byte >= 0x80 with non-ASCII UTF-8); and PgDecode tags the
+# text it slices out of the ASCII-8BIT socket bytes as UTF-8, since
+# equal non-ASCII bytes in different encodings aren't ==.
 
 module PgWire
   # -- big-endian integer helpers ---------------------------------------
@@ -40,8 +46,9 @@ module PgWire
   # StartupMessage: no type byte; length + protocol 3.0 + params.
   def self.startup(user, database)
     body = be32(196608)
-    body = body + "user" + zero + user + zero
-    body = body + "database" + zero + database + zero
+    body = body + "user" + zero + user.b + zero
+    body = body + "database" + zero + database.b + zero
+    body = body + "client_encoding" + zero + "UTF8" + zero
     body = body + zero
     be32(body.bytesize + 4) + body
   end
@@ -49,7 +56,7 @@ module PgWire
   # 'p' carries every auth response: cleartext password, SASL initial,
   # SASL continue.
   def self.password_message(payload)
-    "p" + be32(payload.bytesize + 4) + payload
+    "p" + be32(payload.bytesize + 4) + payload.b
   end
 
   def self.cleartext_password(password)
@@ -66,7 +73,7 @@ module PgWire
 
   # Simple query.
   def self.query(sql)
-    "Q" + be32(sql.bytesize + 4 + 1) + sql + zero
+    "Q" + be32(sql.bytesize + 4 + 1) + sql.b + zero
   end
 
   def self.terminate
@@ -193,7 +200,7 @@ module PgDecode
       while body.getbyte(i) != 0
         i = i + 1
       end
-      names.push(body.byteslice(start, i - start))
+      names.push(body.byteslice(start, i - start).force_encoding("UTF-8"))
       i = i + 1            # NUL
       i = i + 18           # tableoid(4) attnum(2) typoid(4) typlen(2) atttypmod(4) format(2)
       k = k + 1
@@ -215,7 +222,7 @@ module PgDecode
       if len < 0
         vals.push(null_sentinel)
       else
-        vals.push(body.byteslice(i, len))
+        vals.push(body.byteslice(i, len).force_encoding("UTF-8"))
         i = i + len
       end
       k = k + 1
@@ -253,7 +260,7 @@ module PgDecode
     n = body.bytesize
     while i < n
       if body.getbyte(i) == 0
-        return body.byteslice(0, i)
+        return body.byteslice(0, i).force_encoding("UTF-8")
       end
       i = i + 1
     end
@@ -279,7 +286,7 @@ module PgDecode
         j = j + 1
       end
       if c == code
-        return body.byteslice(start, j - start)
+        return body.byteslice(start, j - start).force_encoding("UTF-8")
       end
       i = j + 1
     end
