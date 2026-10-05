@@ -14,6 +14,7 @@ conn = PG.connect("127.0.0.1", 5432, "mastodon", "app", "secret")
 r = conn.exec("SELECT id, name FROM accounts ORDER BY id")
 r.ntuples          # => 2
 r.fields           # => ["id", "name"]
+r.ftype(1)         # => 25       (PostgreSQL text type OID)
 r.getvalue(0, 1)   # => "alice"    (nil for NULL)
 r.cmd_tag          # => "SELECT 2"
 
@@ -34,6 +35,12 @@ ReadyForQuery, so the connection stays usable, and
 `PG::PQTRANS_INERROR`, recover with `ROLLBACK` or `ROLLBACK TO
 SAVEPOINT`. A FATAL error (the server is closing the session) raises
 at once.
+
+`ftype(column)` reports the PostgreSQL type OID from the result's
+RowDescription, including zero-row results. Column indexes are zero-based;
+an index outside `0...nfields` raises `ArgumentError`, as in the pg gem.
+Values still arrive as text or nil: interpreting the OID and converting
+values belongs to the caller.
 
 ## Auth: trust, cleartext, SCRAM-SHA-256
 
