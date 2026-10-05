@@ -1,7 +1,7 @@
 # pg (spinel-pg)
 
-A pure spinel-Ruby PostgreSQL client — protocol v3, simple query, text
-results — over spinel's `sp_net` sockets. Sibling of
+A pure spinel-Ruby PostgreSQL client — protocol v3, simple and extended
+query, text results — over spinel's `sp_net` sockets. Sibling of
 [spinel-redis](https://github.com/rubys/spinel-redis), same
 architecture end to end: pure wire functions, a `try_next`/ivar
 incremental parser, a client core over an injected transport duck
@@ -16,7 +16,24 @@ r.ntuples          # => 2
 r.fields           # => ["id", "name"]
 r.getvalue(0, 1)   # => "alice"    (nil for NULL)
 r.cmd_tag          # => "SELECT 2"
+
+# parameters travel apart from the SQL ($1, $2, ...); nil is NULL
+r = conn.exec_params("SELECT name FROM accounts WHERE id = $1", ["1"])
+r.getvalue(0, 0)   # => "alice"
+
+conn.prepare("by_id", "SELECT name FROM accounts WHERE id = $1")
+conn.exec_prepared("by_id", ["2"]).getvalue(0, 0)   # => "bob"
+conn.close_prepared("by_id")
+
+conn.transaction_status   # => PG::PQTRANS_IDLE (or _INTRANS, _INERROR)
 ```
+
+A server error raises after the reply is drained through
+ReadyForQuery, so the connection stays usable, and
+`transaction_status` reports the server's state after it: on
+`PG::PQTRANS_INERROR`, recover with `ROLLBACK` or `ROLLBACK TO
+SAVEPOINT`. A FATAL error (the server is closing the session) raises
+at once.
 
 ## Auth: trust, cleartext, SCRAM-SHA-256
 
@@ -52,12 +69,15 @@ spinel-redis does with redis-rb) lights up once the gem is installed:
 
 ## v0.1 exclusion ledger
 
-- **Extended query protocol** (parse/bind/execute, parameters) — simple
-  query only; interpolation safety is the caller's problem until then.
-  This is the first thing the ActiveRecord seam will force.
+- **Extended query**: text parameters only, no parameter type OIDs
+  (cast in the SQL where the server can't infer one), no statement
+  cache.
+- **Error fields**: a server error raises `"pg: SEVERITY: message"`;
+  SQLSTATE, detail and the rest aren't exposed yet.
 - **MD5 auth**, **TLS/sslmode** (sp_net TLS = matz/spinel#1054),
-  **COPY**, **LISTEN/NOTIFY**, **portals/cursors**, **binary format
-  results**, **connection pooling**, **unix sockets**.
+  **COPY** (`FROM STDIN` hangs), **LISTEN/NOTIFY**,
+  **portals/cursors**, **binary format results**, **connection
+  pooling**, **unix sockets**.
 - Multi-statement `exec` strings: last result wins.
 - `PG.connect` is positional; the gem's kwargs/URL forms come with the
   seam work.
