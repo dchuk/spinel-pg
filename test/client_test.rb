@@ -18,13 +18,14 @@ class ScriptedTransport
     data.bytesize
   end
 
+  # ASCII-8BIT, as sp_net_recv_some (:binstr) hands back
   def read_some(max)
     if @i >= @chunks.length
       return ""
     end
     c = @chunks[@i]
     @i = @i + 1
-    c
+    c.b
   end
 
   def close
@@ -92,6 +93,7 @@ ok = w.getbyte(4) == 0 && w.getbyte(5) == 3   # protocol 3.0
 ok = ok && wire_has(w, "user" + Z + "app" + Z)
 ok = ok && wire_has(w, "database" + Z + "appdb" + Z)
 puts "startup_wire " + ok.to_s
+puts "startup_enc  " + wire_has(w, "client_encoding" + Z + "UTF8" + Z).to_s
 
 # --- cleartext password -------------------------------------------------------
 
@@ -104,6 +106,21 @@ c = PgClientCore.new(t, "app", "appdb", "sekrit", "nonce")
 c.connect!
 puts "clear_ready  " + c.ready?.to_s
 puts "clear_wire   " + wire_has(t.written, "p" + PgWire.be32(4 + 7) + "sekrit" + Z).to_s
+
+# non-ASCII user and password whose length prefixes hold 0x81 (CRuby
+# can't join that to non-ASCII UTF-8 unless the text goes in as bytes);
+# the caller's strings keep their encoding
+user = "é" * 41
+pw = "é" * 62
+script = [bmsg("R", PgWire.be32(3)), auth_ok + ready_idle]
+t = ScriptedTransport.new(script)
+c = PgClientCore.new(t, user, "d", pw, "nonce")
+c.connect!
+w = t.written
+ok = w.getbyte(0) == 0 && w.getbyte(3) == 129
+ok = ok && wire_has(w, "user" + Z + user.b + Z + "database" + Z + "d" + Z)
+ok = ok && wire_has(w, "p" + PgWire.be32(129) + pw.b + Z)
+puts "utf8_auth    " + (ok && user.encoding.to_s == "UTF-8" && pw.encoding.to_s == "UTF-8").to_s
 
 # --- SCRAM-SHA-256 (RFC 7677 exchange verbatim as the server) -----------------
 
@@ -216,6 +233,35 @@ puts "exec_null    " + n.nil?.to_s
 puts "exec_nonnull " + (r.getvalue(1, 0) == "2").to_s
 oob = r.getvalue(9, 9)
 puts "exec_oob     " + oob.nil?.to_s
+
+# --- utf-8 both ways: SQL, field name, value, error message --------------------
+
+# 135 bytes of SQL put 0x8c in the length prefix (CRuby can't join that
+# to non-ASCII UTF-8 unless the SQL goes in as bytes); the reply is
+# built from bytes too, as it arrives from the socket
+sql = "SELECT '" + "é" * 60 + "' AS ü"
+tbody = PgWire.be16(1) + "ü".b + Z + PgWire.be32(0) + PgWire.be16(0) + PgWire.be32(25) + PgWire.be16(65535) + PgWire.be32(0) + PgWire.be16(0)
+val = "héllo→wörld".b
+script = [
+  auth_ok + ready_idle,
+  bmsg("T", tbody) + bmsg("D", PgWire.be16(1) + PgWire.be32(val.bytesize) + val) + bmsg("C", "SELECT 1" + Z) + ready_idle,
+  bmsg("E", "S" + "ERROR" + Z + "M" + "relation «nope» does not exist".b + Z + Z) + ready_idle
+]
+t = ScriptedTransport.new(script)
+c = PgClientCore.new(t, "u", "d", "", "n")
+c.connect!
+r = c.exec(sql)
+puts "utf8_sql     " + wire_has(t.written, "Q" + PgWire.be32(140) + sql.b + Z).to_s
+puts "utf8_field   " + (r.fields[0] == "ü").to_s
+puts "utf8_value   " + (r.getvalue(0, 0) == "héllo→wörld").to_s
+puts "utf8_tag     " + (r.cmd_tag == "SELECT 1" && r.cmd_tag.encoding.to_s == "UTF-8").to_s
+msg = ""
+begin
+  c.exec("SELECT * FROM «nope»")
+rescue => e
+  msg = e.message
+end
+puts "utf8_error   " + (msg == "pg: ERROR: relation «nope» does not exist").to_s
 
 # --- exec error: E then Z raises after drain ----------------------------------
 
