@@ -37,8 +37,11 @@ SAVEPOINT`. A FATAL error (the server is closing the session) raises
 at once.
 
 `ftype(column)` reports the PostgreSQL type OID from the result's
-RowDescription, including zero-row results. Column indexes are zero-based;
-an index outside `0...nfields` raises `ArgumentError`, as in the pg gem.
+RowDescription, including zero-row results. Column indexes are zero-based.
+Compatibility covers Integer indexes in the signed 32-bit range; within
+that range, an index outside `0...nfields` raises `ArgumentError`, as in
+the pg gem. The gem's index coercion (for example, Float or `to_int`) and
+exception behavior for nil or integers outside that range are not mirrored.
 Values still arrive as text or nil: interpreting the OID and converting
 values belongs to the caller.
 
