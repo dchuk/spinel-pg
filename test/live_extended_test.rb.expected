@@ -1,0 +1,37 @@
+connected    true
+fields       a,b,c,d
+param_text   hello
+param_null   true
+param_empty  true
+param_quotes it's "quoted"; DROP TABLE x; --
+param_int    42
+param_large  100000 true
+param_utf8   11 true
+prepare      true
+prep_run1    INSERT 0 1 id=1
+prep_run2    INSERT 0 1 id=2
+prep_server  1
+insert_tag   INSERT 0 1 fields=0
+err_unique   true
+err_recovers INSERT 0 1
+err_parse    true
+err_bind     true
+closed_stmt  true
+prep_freed   0
+after_errors 4
+tx_begin     true
+tx_error     true
+tx_aborted   true
+tx_rollback  true
+tx_undone    0
+tx_commit    true
+tx_kept      seen
+type_uuid    123e4567-e89b-12d3-a456-426614174000
+type_jsonb   {"a": [true, null], "b": 1}
+type_array   {x,"y z",NULL}
+type_bool    t
+type_numeric 2.50
+no_rows      v 0 SELECT 0
+empty_query  true
+many_rows    20000 row 20000 SELECT 20000
+done

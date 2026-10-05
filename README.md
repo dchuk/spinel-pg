@@ -58,8 +58,8 @@ defaulted to SCRAM since PG 14).
 spin test    # wire, scram + client lanes also run under CRuby and must match
 ```
 
-The live lanes (`live_test`, `live_scram_test`) initdb throwaway
-instances on private ports and tear them down; they need
+The live lanes (`live_test`, `live_scram_test`, `live_extended_test`)
+initdb throwaway instances on private ports and tear them down; they need
 `initdb`/`pg_ctl`/`postgres` on PATH (brew:
 `/opt/homebrew/opt/postgresql@17/bin`). Snapshots committed.
 
