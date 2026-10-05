@@ -38,7 +38,7 @@ defaulted to SCRAM since PG 14).
 ## Tests
 
 ```sh
-spin test    # scram + client lanes also run under CRuby and must match
+spin test    # wire, scram + client lanes also run under CRuby and must match
 ```
 
 The live lanes (`live_test`, `live_scram_test`) initdb throwaway

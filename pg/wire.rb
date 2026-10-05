@@ -69,6 +69,78 @@ module PgWire
     "Q" + be32(sql.bytesize + 4 + 1) + sql + zero
   end
 
+  # -- extended query: text parameters, text results ----------------------
+  #
+  # Names, SQL and values join the message as bytes (.b): under CRuby a
+  # binary length prefix holding a byte >= 0x80 can't be concatenated
+  # with non-ASCII UTF-8 text (Encoding::CompatibilityError).
+
+  # Parse: `sql` becomes statement `name` ("" is the unnamed one). No
+  # parameter type OIDs are sent, which asks the server to infer each $n
+  # from the SQL (a cast settles one it can't).
+  def self.parse(name, sql)
+    body = name.b + zero + sql.b + zero + be16(0)
+    "P" + be32(body.bytesize + 4) + body
+  end
+
+  # Bind: portal <- statement, every parameter and result column in text
+  # format. A nil parameter is SQL NULL (length -1); "" is an empty
+  # value. Non-String parameters go as their to_s, as in the pg gem.
+  # The pieces are joined once at the end: appending to a growing body
+  # copies it per parameter (3 s for 65535 parameters compiled).
+  def self.bind(portal, statement, params)
+    n = params.length
+    if n > 65535
+      raise "pg: " + n.to_s + " parameters; the protocol allows 65535"
+    end
+    parts = [""]
+    parts.delete_at(0)
+    parts.push(portal.b + zero + statement.b + zero + be16(0) + be16(n))
+    i = 0
+    while i < n
+      v = params[i]
+      if v.nil?
+        parts.push(be32(-1))
+      else
+        s = v.to_s.b
+        parts.push(be32(s.bytesize))
+        parts.push(s)
+      end
+      i = i + 1
+    end
+    parts.push(be16(0))
+    body = parts.join("").b
+    "B" + be32(body.bytesize + 4) + body
+  end
+
+  # Describe / Close: target "S" is a prepared statement, "P" a portal.
+  def self.describe(target, name)
+    body = target + name.b + zero
+    "D" + be32(body.bytesize + 4) + body
+  end
+
+  def self.close(target, name)
+    body = target + name.b + zero
+    "C" + be32(body.bytesize + 4) + body
+  end
+
+  # Execute: max_rows 0 runs the portal to completion. Anything outside
+  # 0..2147483647 raises: a larger value would wrap in the int32 field,
+  # and the server reads a negative one as "no limit".
+  def self.execute(portal, max_rows)
+    if max_rows < 0 || max_rows > 2147483647
+      raise "pg: max_rows " + max_rows.to_s + " is outside 0..2147483647"
+    end
+    body = portal.b + zero + be32(max_rows)
+    "E" + be32(body.bytesize + 4) + body
+  end
+
+  # Sync ends the cycle: the server answers ReadyForQuery, and after an
+  # error it skips everything up to here first.
+  def self.sync
+    "S" + be32(4)
+  end
+
   def self.terminate
     "X" + be32(4)
   end
@@ -87,7 +159,10 @@ class PgMsg
     @body = body
   end
 
-  # Single-char message type: "R", "S", "K", "Z", "T", "D", "C", "E", "N", ...
+  # Single-char message type: "R", "S", "K", "Z", "T", "D", "C", "E", "N",
+  # "I", and the extended-query replies "1" ParseComplete, "2"
+  # BindComplete, "3" CloseComplete, "t" ParameterDescription, "n"
+  # NoData, "s" PortalSuspended (all bodiless but "t").
   def kind
     @kind
   end
@@ -180,8 +255,9 @@ module PgDecode
     body.byteslice(0, 1)
   end
 
-  # 'T' RowDescription: just the field names (Array<String>); type oids
-  # etc. are skipped (text protocol, everything arrives as strings).
+  # 'T' RowDescription: just the field names (Array<String>); the rest
+  # of each field is skipped (text protocol, everything arrives as
+  # strings) except the type OID, which field_types reads.
   def self.field_names(body)
     names = [""]
     names.delete_at(0)
@@ -199,6 +275,49 @@ module PgDecode
       k = k + 1
     end
     names
+  end
+
+  # 'T' again: each field's type OID, parallel to field_names (a flat
+  # IntArray, same split as row_values / row_null_flags).
+  def self.field_types(body)
+    oids = [0]
+    oids.delete_at(0)
+    nfields = PgWire.read16(body, 0)
+    i = 2
+    k = 0
+    while k < nfields
+      while body.getbyte(i) != 0
+        i = i + 1
+      end
+      i = i + 1            # NUL
+      oids.push(oid_at(body, i + 6))   # past tableoid(4) attnum(2)
+      i = i + 18
+      k = k + 1
+    end
+    oids
+  end
+
+  # 't' ParameterDescription: the type OID the server settled on for
+  # each $n of a statement.
+  def self.param_types(body)
+    oids = [0]
+    oids.delete_at(0)
+    n = PgWire.read16(body, 0)
+    k = 0
+    while k < n
+      oids.push(oid_at(body, 2 + 4 * k))
+      k = k + 1
+    end
+    oids
+  end
+
+  # OIDs are unsigned 32-bit; read32 reads the signed int32.
+  def self.oid_at(body, i)
+    v = PgWire.read32(body, i)
+    if v < 0
+      v = v + 4294967296
+    end
+    v
   end
 
   # 'D' DataRow: column values; a NULL column (length -1) becomes the
